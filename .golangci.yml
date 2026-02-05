@@ -1,0 +1,34 @@
+run:
+  timeout: 5m
+  go: '1.25'
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gocritic
+    - revive
+    - gosec
+    - goconst
+    - bodyclose
+    - nilerr
+    - noctx
+
+linters-settings:
+  revive:
+    rules:
+      - name: exported
+      - name: package-comments
+      - name: argument-limit
+        arguments: [5]
+      - name: function-result-limit
+        arguments: [3]
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
