@@ -20,7 +20,11 @@ uninstall:
 test:
 	go test -v ./...
 
+fmt:
+	go fmt ./...
+
 lint:
+	golangci-lint run
 	go vet ./...
 
 deps:

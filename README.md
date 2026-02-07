@@ -4,7 +4,7 @@ A lightweight MCP (Model Context Protocol) server that exposes Linux system metr
 
 ## Features
 
-- **7 MCP Tools**: System info, CPU, memory, disk, network, processes, and thermal status
+- **12 MCP Tools**: System info, CPU, memory, disk, disk I/O, network, network connections, processes, thermal, Docker, system health, and service status
 - **Configurable**: CLI arguments for temperature units, process limits, mount points, and interfaces
 - **Cross-Platform**: Works on any Linux system (enhanced metrics for Raspberry Pi)
 - **AI-Ready**: Designed for integration with Claude Desktop, Cursor, or any MCP client
@@ -115,6 +115,34 @@ Returns thermal status including CPU/GPU temperatures and throttling information
 **Optional Arguments:**
 - `temp_unit`: Override temperature unit
 
+### `get_disk_io_metrics`
+Returns disk I/O statistics including read/write throughput, IOPS, and I/O time per device.
+
+**Optional Arguments:**
+- `devices`: Comma-separated device names to check (e.g. `sda,nvme0n1`)
+
+### `get_system_health`
+Returns an aggregated health dashboard with CPU, memory, disk, and uptime. Includes an overall status of `healthy`, `warning`, or `critical` based on resource thresholds.
+
+### `get_docker_metrics`
+Returns Docker container metrics including CPU and memory usage via cgroups. Returns an empty list gracefully if Docker is not available.
+
+**Optional Arguments:**
+- `container_id`: Filter to a specific container by ID or name
+
+### `get_network_connections`
+Returns active TCP/UDP network connections with local/remote addresses, status, and owning PID.
+
+**Optional Arguments:**
+- `kind`: Connection type filter (`tcp`, `udp`, or `all`; default: `all`)
+- `status`: Filter by connection status (e.g. `LISTEN`, `ESTABLISHED`)
+
+### `get_service_status`
+Returns systemd service health information via `systemctl show`.
+
+**Required Arguments:**
+- `services`: Comma-separated list of service names to check
+
 ## Example Usage
 
 Once configured, you can ask your AI assistant:
@@ -124,6 +152,11 @@ Once configured, you can ask your AI assistant:
 - "List the top 5 processes by memory usage"
 - "What's my network usage on eth0?"
 - "Check if my Raspberry Pi is throttling"
+- "What's the overall health of my system?"
+- "Show me active TCP connections in LISTEN state"
+- "Check if the SSH and Docker services are running"
+- "What are the disk I/O stats for my drives?"
+- "How much CPU and memory are my Docker containers using?"
 
 ## Raspberry Pi Enhancements
 
