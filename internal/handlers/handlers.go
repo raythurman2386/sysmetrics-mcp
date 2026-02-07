@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"runtime"
 	"sort"
 	"strings"
@@ -16,11 +17,26 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/shirou/gopsutil/v3/docker"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/load"
 	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/shirou/gopsutil/v3/net"
 	"github.com/shirou/gopsutil/v3/process"
+)
+
+// Health status constants.
+const (
+	statusHealthy  = "healthy"
+	statusCritical = "critical"
+	statusWarning  = "warning"
+)
+
+// Network kind constants.
+const (
+	kindTCP = "tcp"
+	kindUDP = "udp"
+	kindAll = "all"
 )
 
 // HandlerManager manages the MCP tool handlers
@@ -79,6 +95,38 @@ func (h *HandlerManager) RegisterTools(s *server.MCPServer) {
 		mcp.WithString("temp_unit", mcp.Description("Override temperature unit: celsius, fahrenheit, or kelvin"),
 			mcp.Enum(config.UnitCelsius, config.UnitFahrenheit, config.UnitKelvin))),
 		h.HandleGetThermalStatus)
+
+	// Disk I/O metrics tool
+	s.AddTool(mcp.NewTool("get_disk_io_metrics",
+		mcp.WithDescription("Get disk I/O statistics including read/write throughput, IOPS, and I/O time"),
+		mcp.WithString("devices", mcp.Description("Comma-separated device names to check (e.g. sda,nvme0n1)"))),
+		h.HandleGetDiskIOMetrics)
+
+	// System health tool
+	s.AddTool(mcp.NewTool("get_system_health",
+		mcp.WithDescription("Get an aggregated system health dashboard with CPU, memory, disk, and uptime in a single call")),
+		h.HandleGetSystemHealth)
+
+	// Docker metrics tool
+	s.AddTool(mcp.NewTool("get_docker_metrics",
+		mcp.WithDescription("Get Docker container metrics including CPU and memory usage via cgroups"),
+		mcp.WithString("container_id", mcp.Description("Optional container ID to filter results"))),
+		h.HandleGetDockerMetrics)
+
+	// Network connections tool
+	s.AddTool(mcp.NewTool("get_network_connections",
+		mcp.WithDescription("Get active network connections with local/remote addresses, status, and owning PID"),
+		mcp.WithString("kind", mcp.Description("Connection type filter: tcp, udp, or all"),
+			mcp.Enum("tcp", "udp", "all")),
+		mcp.WithString("status", mcp.Description("Filter by connection status (e.g. LISTEN, ESTABLISHED)"))),
+		h.HandleGetNetworkConnections)
+
+	// Service status tool
+	s.AddTool(mcp.NewTool("get_service_status",
+		mcp.WithDescription("Get systemd service status for specified services"),
+		mcp.WithString("services", mcp.Description("Comma-separated list of service names to check (required)"),
+			mcp.Required())),
+		h.HandleGetServiceStatus)
 }
 
 // HandleGetSystemInfo returns system information
@@ -508,6 +556,388 @@ func (h *HandlerManager) HandleGetThermalStatus(ctx context.Context, request mcp
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
 	}
 	return mcp.NewToolResultText(string(jsonBytes)), nil
+}
+
+// HandleGetDiskIOMetrics returns disk I/O statistics
+func (h *HandlerManager) HandleGetDiskIOMetrics(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var devices []string
+
+	if args, ok := request.Params.Arguments.(map[string]interface{}); ok {
+		if devStr, ok := args["devices"].(string); ok && devStr != "" {
+			devices = config.SplitAndTrim(devStr)
+		}
+	}
+
+	ioCounters, err := disk.IOCounters()
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get disk I/O stats: %v", err)), nil
+	}
+
+	diskIOData := []map[string]interface{}{}
+	for name, io := range ioCounters {
+		// If specific devices requested, filter
+		if len(devices) > 0 && !contains(devices, name) {
+			continue
+		}
+
+		diskIOData = append(diskIOData, map[string]interface{}{
+			"device":       name,
+			"read_count":   io.ReadCount,
+			"write_count":  io.WriteCount,
+			"read_bytes":   io.ReadBytes,
+			"read_human":   config.BytesToHuman(io.ReadBytes),
+			"write_bytes":  io.WriteBytes,
+			"write_human":  config.BytesToHuman(io.WriteBytes),
+			"read_time":    io.ReadTime,
+			"write_time":   io.WriteTime,
+			"io_time":      io.IoTime,
+			"weighted_io":  io.WeightedIO,
+			"iops_in_prog": io.IopsInProgress,
+		})
+	}
+
+	result := map[string]interface{}{
+		"devices": diskIOData,
+		"total":   len(diskIOData),
+	}
+
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(jsonBytes)), nil
+}
+
+// HandleGetSystemHealth returns an aggregated system health dashboard
+func (h *HandlerManager) HandleGetSystemHealth(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	// CPU usage
+	cpuPercent, err := cpu.Percent(0, false)
+	if err != nil {
+		cpuPercent = []float64{0}
+	}
+	cpuUsage := cpuPercent[0]
+
+	// Load average
+	loadAvg, err := load.Avg()
+	if err != nil {
+		loadAvg = &load.AvgStat{}
+	}
+
+	// Memory
+	memInfo, err := mem.VirtualMemory()
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get memory info: %v", err)), nil
+	}
+
+	// Root disk
+	rootDisk, err := disk.Usage("/")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get root disk info: %v", err)), nil
+	}
+
+	// Uptime
+	info, err := host.Info()
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get system info: %v", err)), nil
+	}
+	//nolint:gosec // G115: integer overflow conversion safe for reasonable uptimes
+	uptime := time.Duration(info.Uptime) * time.Second
+
+	// Determine overall status
+	status := statusHealthy
+	var warnings []string
+
+	if cpuUsage > 95 {
+		status = statusCritical
+		warnings = append(warnings, "CPU usage is critical (>95%)")
+	} else if cpuUsage > 80 {
+		if status != statusCritical {
+			status = statusWarning
+		}
+		warnings = append(warnings, "CPU usage is high (>80%)")
+	}
+
+	if memInfo.UsedPercent > 95 {
+		status = statusCritical
+		warnings = append(warnings, "Memory usage is critical (>95%)")
+	} else if memInfo.UsedPercent > 85 {
+		if status != statusCritical {
+			status = statusWarning
+		}
+		warnings = append(warnings, "Memory usage is high (>85%)")
+	}
+
+	if rootDisk.UsedPercent > 95 {
+		status = statusCritical
+		warnings = append(warnings, "Disk usage is critical (>95%)")
+	} else if rootDisk.UsedPercent > 85 {
+		if status != statusCritical {
+			status = statusWarning
+		}
+		warnings = append(warnings, "Disk usage is high (>85%)")
+	}
+
+	result := map[string]interface{}{
+		"status":   status,
+		"warnings": warnings,
+		"cpu": map[string]interface{}{
+			"usage_percent": cpuUsage,
+			"load_1m":       loadAvg.Load1,
+			"load_5m":       loadAvg.Load5,
+			"load_15m":      loadAvg.Load15,
+		},
+		"memory": map[string]interface{}{
+			"usage_percent":   memInfo.UsedPercent,
+			"available_bytes": memInfo.Available,
+			"available_human": config.BytesToHuman(memInfo.Available),
+			"total_human":     config.BytesToHuman(memInfo.Total),
+		},
+		"disk": map[string]interface{}{
+			"mount_point":   "/",
+			"usage_percent": rootDisk.UsedPercent,
+			"free_bytes":    rootDisk.Free,
+			"free_human":    config.BytesToHuman(rootDisk.Free),
+			"total_human":   config.BytesToHuman(rootDisk.Total),
+		},
+		"uptime": map[string]interface{}{
+			"seconds": info.Uptime,
+			"human":   uptime.String(),
+		},
+		"hostname": info.Hostname,
+	}
+
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(jsonBytes)), nil
+}
+
+// HandleGetDockerMetrics returns Docker container metrics
+func (h *HandlerManager) HandleGetDockerMetrics(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var containerFilter string
+
+	if args, ok := request.Params.Arguments.(map[string]interface{}); ok {
+		if cid, ok := args["container_id"].(string); ok && cid != "" {
+			containerFilter = cid
+		}
+	}
+
+	// Get Docker container stats
+	containers, err := docker.GetDockerStat()
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Docker not available or no containers found: %v", err)), nil
+	}
+
+	containerData := []map[string]interface{}{}
+	for _, c := range containers {
+		// If a specific container is requested, filter
+		if containerFilter != "" && c.ContainerID != containerFilter && c.Name != containerFilter {
+			continue
+		}
+
+		cInfo := map[string]interface{}{
+			"container_id": c.ContainerID,
+			"name":         c.Name,
+			"image":        c.Image,
+			"status":       c.Status,
+			"running":      c.Running,
+		}
+
+		// Try to get CPU stats for this container
+		cpuStat, err := docker.CgroupCPU(c.ContainerID, "")
+		if err == nil {
+			cInfo["cpu"] = map[string]interface{}{
+				"user":   cpuStat.User,
+				"system": cpuStat.System,
+				"usage":  cpuStat.Usage,
+			}
+		}
+
+		// Try to get memory stats for this container
+		memStat, err := docker.CgroupMem(c.ContainerID, "")
+		if err == nil {
+			cInfo["memory"] = map[string]interface{}{
+				"cache":       memStat.Cache,
+				"rss":         memStat.RSS,
+				"rss_human":   config.BytesToHuman(memStat.RSS),
+				"mapped_file": memStat.MappedFile,
+			}
+		}
+
+		containerData = append(containerData, cInfo)
+	}
+
+	result := map[string]interface{}{
+		"containers": containerData,
+		"total":      len(containerData),
+	}
+
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(jsonBytes)), nil
+}
+
+// HandleGetNetworkConnections returns active network connections
+func (h *HandlerManager) HandleGetNetworkConnections(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	kind := kindAll
+	statusFilter := ""
+
+	if args, ok := request.Params.Arguments.(map[string]interface{}); ok {
+		if k, ok := args["kind"].(string); ok && k != "" {
+			kind = strings.ToLower(k)
+		}
+		if s, ok := args["status"].(string); ok && s != "" {
+			statusFilter = strings.ToUpper(s)
+		}
+	}
+
+	// Validate kind parameter against known values
+	if kind != kindTCP && kind != kindUDP {
+		kind = kindAll
+	}
+
+	connections, err := net.Connections(kind)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get network connections: %v", err)), nil
+	}
+
+	connData := []map[string]interface{}{}
+	for _, c := range connections {
+		// Filter by status if specified
+		if statusFilter != "" && c.Status != statusFilter {
+			continue
+		}
+
+		connInfo := map[string]interface{}{
+			"type":       connTypeToString(c.Type),
+			"status":     c.Status,
+			"local_addr": fmt.Sprintf("%s:%d", c.Laddr.IP, c.Laddr.Port),
+			"pid":        c.Pid,
+		}
+
+		if c.Raddr.IP != "" {
+			connInfo["remote_addr"] = fmt.Sprintf("%s:%d", c.Raddr.IP, c.Raddr.Port)
+		} else {
+			connInfo["remote_addr"] = ""
+		}
+
+		connData = append(connData, connInfo)
+	}
+
+	result := map[string]interface{}{
+		"connections": connData,
+		"total":       len(connData),
+		"kind":        kind,
+	}
+
+	if statusFilter != "" {
+		result["status_filter"] = statusFilter
+	}
+
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(jsonBytes)), nil
+}
+
+// HandleGetServiceStatus returns systemd service status
+func (h *HandlerManager) HandleGetServiceStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var services []string
+
+	if args, ok := request.Params.Arguments.(map[string]interface{}); ok {
+		if svcStr, ok := args["services"].(string); ok && svcStr != "" {
+			services = config.SplitAndTrim(svcStr)
+		}
+	}
+
+	if len(services) == 0 {
+		return mcp.NewToolResultError("services parameter is required"), nil
+	}
+
+	serviceData := []map[string]interface{}{}
+	for _, svc := range services {
+		svcInfo := getServiceInfo(svc)
+		serviceData = append(serviceData, svcInfo)
+	}
+
+	result := map[string]interface{}{
+		"services": serviceData,
+		"total":    len(serviceData),
+	}
+
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(jsonBytes)), nil
+}
+
+// getServiceInfo queries systemctl for service information
+func getServiceInfo(serviceName string) map[string]interface{} {
+	// Ensure service name ends with .service for consistency
+	unitName := serviceName
+	if !strings.HasSuffix(unitName, ".service") {
+		unitName += ".service"
+	}
+
+	properties := []string{"LoadState", "ActiveState", "SubState", "Description", "MainPID"}
+
+	result := map[string]interface{}{
+		"name": serviceName,
+	}
+
+	//nolint:gosec // G204: unitName is validated and suffixed with .service above
+	cmd := exec.Command("systemctl", "show", unitName,
+		"--property="+strings.Join(properties, ","),
+		"--no-pager")
+	output, err := cmd.Output()
+	if err != nil {
+		result["error"] = fmt.Sprintf("Failed to query service: %v", err)
+		result["available"] = false
+		return result
+	}
+
+	result["available"] = true
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	for _, line := range lines {
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+
+		switch key {
+		case "LoadState":
+			result["load_state"] = value
+		case "ActiveState":
+			result["active_state"] = value
+		case "SubState":
+			result["sub_state"] = value
+		case "Description":
+			result["description"] = value
+		case "MainPID":
+			result["main_pid"] = value
+		}
+	}
+
+	return result
+}
+
+// connTypeToString converts a connection type uint32 to a human-readable string
+func connTypeToString(connType uint32) string {
+	switch connType {
+	case 1:
+		return kindTCP
+	case 2:
+		return kindUDP
+	default:
+		return fmt.Sprintf("unknown(%d)", connType)
+	}
 }
 
 // contains checks if a string slice contains a value

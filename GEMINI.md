@@ -4,7 +4,7 @@ A lightweight [Model Context Protocol (MCP)](https://modelcontextprotocol.io) se
 
 ## Project Overview
 
-- **Core Functionality**: Exposes system metrics (CPU, Memory, Disk, Network, Processes, Thermal) as MCP tools.
+- **Core Functionality**: Exposes system metrics (CPU, Memory, Disk, Disk I/O, Network, Network Connections, Processes, Thermal, Docker, System Health, Service Status) as MCP tools.
 - **Main Technologies**:
   - **Language**: Go 1.25.6+
   - **MCP Framework**: `github.com/mark3labs/mcp-go`
@@ -69,3 +69,8 @@ The following tools are available to the AI:
 5.  `get_network_metrics`: Interface statistics and IP addresses.
 6.  `get_process_list`: Top processes by CPU/Memory.
 7.  `get_thermal_status`: Advanced thermal and throttling info (Pi-optimized).
+8.  `get_disk_io_metrics`: Disk I/O throughput, IOPS, and read/write times.
+9.  `get_system_health`: Aggregated health dashboard (CPU, memory, disk, uptime, status).
+10. `get_docker_metrics`: Docker container CPU and memory metrics via cgroups.
+11. `get_network_connections`: Active TCP/UDP connections with PID and status.
+12. `get_service_status`: Systemd service health via `systemctl show`.
