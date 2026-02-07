@@ -4,7 +4,7 @@ BINARY_NAME=sysmetrics-mcp
 INSTALL_PATH=/usr/local/bin
 
 build:
-	go build -o bin/$(BINARY_NAME) ./cmd/sysmetrics-mcp
+	CGO_ENABLED=0 go build -o bin/$(BINARY_NAME) ./cmd/sysmetrics-mcp
 
 clean:
 	rm -f bin/$(BINARY_NAME)
