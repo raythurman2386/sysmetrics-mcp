@@ -725,7 +725,7 @@ func (h *HandlerManager) HandleGetDockerMetrics(ctx context.Context, request mcp
 
 	// Verify docker is available
 	if _, err := exec.LookPath("docker"); err != nil {
-		return mcp.NewToolResultError("Docker CLI not found. Ensure Docker is installed and the 'docker' command is in PATH."), nil
+		return mcp.NewToolResultError(fmt.Sprintf("Docker CLI not found: %v", err)), nil
 	}
 
 	// Get container list via docker ps
