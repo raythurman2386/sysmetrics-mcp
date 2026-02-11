@@ -135,15 +135,15 @@ func TestHandleGetDockerMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Handler returned error: %v", err)
 	}
-	// Docker may not be available — either we get a tool error or valid JSON
+	// Docker CLI may not be available — either we get a tool error or valid JSON
 	textContent, ok := res.Content[0].(mcp.TextContent)
 	if !ok {
 		t.Fatalf("Result content not TextContent: %T", res.Content[0])
 	}
 	if res.IsError {
 		// Graceful degradation: Docker not available
-		if !strings.Contains(textContent.Text, "Docker not available") {
-			t.Errorf("Expected Docker unavailable message, got: %s", textContent.Text)
+		if !strings.Contains(textContent.Text, "Docker") {
+			t.Errorf("Expected Docker-related error message, got: %s", textContent.Text)
 		}
 		return
 	}
@@ -157,6 +157,58 @@ func TestHandleGetDockerMetrics(t *testing.T) {
 	}
 	if _, ok := data["total"]; !ok {
 		t.Error("Missing 'total' key in Docker metrics result")
+	}
+	// Verify containers is an array
+	containers, ok := data["containers"].([]interface{})
+	if !ok {
+		t.Fatal("'containers' is not an array")
+	}
+	// If containers exist, verify structure
+	for i, c := range containers {
+		cMap, ok := c.(map[string]interface{})
+		if !ok {
+			t.Errorf("Container %d is not an object", i)
+			continue
+		}
+		for _, key := range []string{"container_id", "name", "image", "status", "running"} {
+			if _, ok := cMap[key]; !ok {
+				t.Errorf("Container %d missing key %q", i, key)
+			}
+		}
+	}
+}
+
+func TestHandleGetDockerMetricsWithFilter(t *testing.T) {
+	h := NewHandlerManager(&config.Config{})
+	req := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Arguments: map[string]interface{}{
+				"container_id": "nonexistent-container-12345",
+			},
+		},
+	}
+	res, err := h.HandleGetDockerMetrics(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Handler returned error: %v", err)
+	}
+	textContent, ok := res.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("Result content not TextContent: %T", res.Content[0])
+	}
+	if res.IsError {
+		// Docker not available, that's OK in CI
+		return
+	}
+	var data map[string]interface{}
+	if parseErr := json.Unmarshal([]byte(textContent.Text), &data); parseErr != nil {
+		t.Fatalf("Failed to parse result JSON: %v", parseErr)
+	}
+	total, ok := data["total"].(float64)
+	if !ok {
+		t.Fatal("'total' is not a number")
+	}
+	if total != 0 {
+		t.Errorf("Expected 0 containers for nonexistent filter, got %v", total)
 	}
 }
 

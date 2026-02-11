@@ -17,7 +17,6 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
-	"github.com/shirou/gopsutil/v3/docker"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/load"
 	"github.com/shirou/gopsutil/v3/mem"
@@ -109,8 +108,8 @@ func (h *HandlerManager) RegisterTools(s *server.MCPServer) {
 
 	// Docker metrics tool
 	s.AddTool(mcp.NewTool("get_docker_metrics",
-		mcp.WithDescription("Get Docker container metrics including CPU and memory usage via cgroups"),
-		mcp.WithString("container_id", mcp.Description("Optional container ID to filter results"))),
+		mcp.WithDescription("Get Docker container metrics including CPU, memory, network, and block I/O usage"),
+		mcp.WithString("container_id", mcp.Description("Optional container ID or name to filter results"))),
 		h.HandleGetDockerMetrics)
 
 	// Network connections tool
@@ -713,7 +712,8 @@ func (h *HandlerManager) HandleGetSystemHealth(ctx context.Context, request mcp.
 	return mcp.NewToolResultText(string(jsonBytes)), nil
 }
 
-// HandleGetDockerMetrics returns Docker container metrics
+// HandleGetDockerMetrics returns Docker container metrics using the docker CLI.
+// This approach works with both cgroups v1 and v2 systems.
 func (h *HandlerManager) HandleGetDockerMetrics(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var containerFilter string
 
@@ -723,46 +723,104 @@ func (h *HandlerManager) HandleGetDockerMetrics(ctx context.Context, request mcp
 		}
 	}
 
-	// Get Docker container stats
-	containers, err := docker.GetDockerStat()
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Docker not available or no containers found: %v", err)), nil
+	// Verify docker is available
+	if _, err := exec.LookPath("docker"); err != nil {
+		return mcp.NewToolResultError("Docker CLI not found. Ensure Docker is installed and the 'docker' command is in PATH."), nil
 	}
 
-	containerData := []map[string]interface{}{}
-	for _, c := range containers {
-		// If a specific container is requested, filter
-		if containerFilter != "" && c.ContainerID != containerFilter && c.Name != containerFilter {
+	// Get container list via docker ps
+	psArgs := []string{"ps", "-a", "--no-trunc", "--format", "{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.State}}"}
+	psOut, err := exec.CommandContext(ctx, "docker", psArgs...).Output()
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to list Docker containers: %v", err)), nil
+	}
+
+	// Parse container list
+	type containerInfo struct {
+		id      string
+		name    string
+		image   string
+		status  string
+		running bool
+	}
+	var containers []containerInfo
+	for _, line := range strings.Split(strings.TrimSpace(string(psOut)), "\n") {
+		if line == "" {
 			continue
 		}
+		cols := strings.SplitN(line, "|", 5)
+		if len(cols) != 5 {
+			continue
+		}
+		c := containerInfo{
+			id:      cols[0],
+			name:    cols[1],
+			image:   cols[2],
+			status:  cols[3],
+			running: strings.EqualFold(cols[4], "running"),
+		}
+		// Client-side filtering by container ID or name
+		if containerFilter != "" && c.id != containerFilter && c.name != containerFilter &&
+			!strings.HasPrefix(c.id, containerFilter) {
+			continue
+		}
+		containers = append(containers, c)
+	}
 
+	// Get live stats via docker stats for running containers
+	type statsInfo struct {
+		cpuPerc  string
+		memUsage string
+		memPerc  string
+		netIO    string
+		blockIO  string
+		pids     string
+	}
+	statsMap := make(map[string]statsInfo)
+
+	// Only fetch stats if we have containers
+	if len(containers) > 0 {
+		statsArgs := []string{"stats", "--no-stream", "--no-trunc", "--format", "{{.ID}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}|{{.NetIO}}|{{.BlockIO}}|{{.PIDs}}"}
+		statsOut, err := exec.CommandContext(ctx, "docker", statsArgs...).Output()
+		if err == nil {
+			for _, line := range strings.Split(strings.TrimSpace(string(statsOut)), "\n") {
+				if line == "" {
+					continue
+				}
+				cols := strings.SplitN(line, "|", 7)
+				if len(cols) != 7 {
+					continue
+				}
+				statsMap[cols[0]] = statsInfo{
+					cpuPerc:  strings.TrimSpace(cols[1]),
+					memUsage: strings.TrimSpace(cols[2]),
+					memPerc:  strings.TrimSpace(cols[3]),
+					netIO:    strings.TrimSpace(cols[4]),
+					blockIO:  strings.TrimSpace(cols[5]),
+					pids:     strings.TrimSpace(cols[6]),
+				}
+			}
+		}
+	}
+
+	// Build result
+	containerData := []map[string]interface{}{}
+	for _, c := range containers {
 		cInfo := map[string]interface{}{
-			"container_id": c.ContainerID,
-			"name":         c.Name,
-			"image":        c.Image,
-			"status":       c.Status,
-			"running":      c.Running,
+			"container_id": c.id,
+			"name":         c.name,
+			"image":        c.image,
+			"status":       c.status,
+			"running":      c.running,
 		}
 
-		// Try to get CPU stats for this container
-		cpuStat, err := docker.CgroupCPU(c.ContainerID, "")
-		if err == nil {
-			cInfo["cpu"] = map[string]interface{}{
-				"user":   cpuStat.User,
-				"system": cpuStat.System,
-				"usage":  cpuStat.Usage,
-			}
-		}
-
-		// Try to get memory stats for this container
-		memStat, err := docker.CgroupMem(c.ContainerID, "")
-		if err == nil {
-			cInfo["memory"] = map[string]interface{}{
-				"cache":       memStat.Cache,
-				"rss":         memStat.RSS,
-				"rss_human":   config.BytesToHuman(memStat.RSS),
-				"mapped_file": memStat.MappedFile,
-			}
+		if stats, ok := statsMap[c.id]; ok {
+			cInfo["cpu_percent"] = stats.cpuPerc
+			cInfo["memory_usage"] = stats.memUsage
+			cInfo["memory_percent"] = stats.memPerc
+			cInfo["network_io"] = stats.netIO
+			cInfo["block_io"] = stats.blockIO
+			cInfo["pids"] = stats.pids
 		}
 
 		containerData = append(containerData, cInfo)
