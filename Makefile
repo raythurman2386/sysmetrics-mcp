@@ -4,6 +4,7 @@ BINARY_NAME=sysmetrics-mcp
 INSTALL_PATH=/usr/local/bin
 
 build:
+	mkdir -p bin
 	CGO_ENABLED=0 go build -o bin/$(BINARY_NAME) ./cmd/sysmetrics-mcp
 
 clean:
@@ -18,7 +19,7 @@ uninstall:
 	sudo rm -f $(INSTALL_PATH)/$(BINARY_NAME)
 
 test:
-	go test -v ./...
+	CGO_ENABLED=0 go test -v ./...
 
 fmt:
 	go fmt ./...
