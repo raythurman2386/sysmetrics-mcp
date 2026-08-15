@@ -21,6 +21,7 @@ func main() {
 	flag.StringVar(&cfg.MountPointsStr, "mount-points", "", "Comma-separated mount points to monitor (empty = all)")
 	flag.StringVar(&cfg.InterfacesStr, "interfaces", "", "Comma-separated interfaces to monitor (empty = all)")
 	flag.BoolVar(&cfg.EnableGPU, "enable-gpu", true, "Attempt to read GPU metrics if available")
+	flag.IntVar(&cfg.MonitorInterval, "monitor-interval", config.DefaultMonitorInterval, "Default sampling interval in seconds for monitoring")
 	flag.Parse()
 
 	// Validate and parse comma-separated lists
@@ -35,9 +36,16 @@ func main() {
 		"1.0.0",
 	)
 
-	// Create handler manager and register tools
+	// Enable sampling so the server can proactively push alerts to clients
+	// that declare sampling support.
+	s.EnableSampling()
+
+	// Create handler manager and register tools, resources, and prompts
 	hm := handlers.NewHandlerManager(&cfg)
 	hm.RegisterTools(s)
+	hm.RegisterMonitoringTools(s)
+	hm.RegisterResources(s)
+	hm.RegisterPrompts(s)
 
 	// Start server via stdio
 	if err := server.ServeStdio(s); err != nil {

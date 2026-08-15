@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"sysmetrics-mcp/internal/config"
+	"sysmetrics-mcp/internal/monitor"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -24,13 +25,6 @@ import (
 	"github.com/shirou/gopsutil/v3/process"
 )
 
-// Health status constants.
-const (
-	statusHealthy  = "healthy"
-	statusCritical = "critical"
-	statusWarning  = "warning"
-)
-
 // Network kind constants.
 const (
 	kindTCP = "tcp"
@@ -40,12 +34,16 @@ const (
 
 // HandlerManager manages the MCP tool handlers
 type HandlerManager struct {
-	cfg *config.Config
+	cfg     *config.Config
+	monitor *monitor.Monitor
 }
 
 // NewHandlerManager creates a new HandlerManager
 func NewHandlerManager(cfg *config.Config) *HandlerManager {
-	return &HandlerManager{cfg: cfg}
+	return &HandlerManager{
+		cfg:     cfg,
+		monitor: monitor.NewMonitor(monitor.DefaultThresholds(), 60),
+	}
 }
 
 // RegisterTools registers all available tools with the MCP server
@@ -642,38 +640,19 @@ func (h *HandlerManager) HandleGetSystemHealth(ctx context.Context, request mcp.
 	//nolint:gosec // G115: integer overflow conversion safe for reasonable uptimes
 	uptime := time.Duration(info.Uptime) * time.Second
 
-	// Determine overall status
-	status := statusHealthy
-	var warnings []string
+	// Determine overall status via shared threshold evaluation
+	status, alerts := monitor.EvaluateHealth(
+		monitor.DefaultThresholds(),
+		cpuUsage,
+		memInfo.UsedPercent,
+		rootDisk.UsedPercent,
+		[]monitor.NetStat{},
+	)
 
-	if cpuUsage > 95 {
-		status = statusCritical
-		warnings = append(warnings, "CPU usage is critical (>95%)")
-	} else if cpuUsage > 80 {
-		if status != statusCritical {
-			status = statusWarning
-		}
-		warnings = append(warnings, "CPU usage is high (>80%)")
-	}
-
-	if memInfo.UsedPercent > 95 {
-		status = statusCritical
-		warnings = append(warnings, "Memory usage is critical (>95%)")
-	} else if memInfo.UsedPercent > 85 {
-		if status != statusCritical {
-			status = statusWarning
-		}
-		warnings = append(warnings, "Memory usage is high (>85%)")
-	}
-
-	if rootDisk.UsedPercent > 95 {
-		status = statusCritical
-		warnings = append(warnings, "Disk usage is critical (>95%)")
-	} else if rootDisk.UsedPercent > 85 {
-		if status != statusCritical {
-			status = statusWarning
-		}
-		warnings = append(warnings, "Disk usage is high (>85%)")
+	// Keep warnings as human-readable strings
+	warnings := make([]string, 0, len(alerts))
+	for _, a := range alerts {
+		warnings = append(warnings, a.Message)
 	}
 
 	result := map[string]interface{}{

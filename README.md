@@ -4,7 +4,11 @@ A lightweight MCP (Model Context Protocol) server that exposes Linux system metr
 
 ## Features
 
-- **12 MCP Tools**: System info, CPU, memory, disk, disk I/O, network, network connections, processes, thermal, Docker, system health, and service status
+- **19 MCP Tools**: System info, CPU, memory, disk, disk I/O, network, network connections, processes, thermal, Docker, system health, service status, plus monitoring and alerting tools
+- **MCP Resources**: Subscribable `sys://metrics/*` resources for proactive state reads
+- **MCP Prompts**: `analyze_system_health` and `diagnose_performance_issue` prompt templates
+- **Streaming Metrics**: Delta-based throughput sampling (network bytes/s, disk IOPS/bytes/s) and history
+- **Threshold Alerting**: Background monitoring that generates warning/critical alerts on resource saturation
 - **Configurable**: CLI arguments for temperature units, process limits, mount points, and interfaces
 - **Cross-Platform**: Works on any Linux system (enhanced metrics for Raspberry Pi)
 - **AI-Ready**: Designed for integration with Claude Desktop, Cursor, or any MCP client
@@ -74,6 +78,7 @@ Add to your agent's configuration file:
 | `--mount-points` | `""` | Comma-separated mount points (empty = all) |
 | `--interfaces` | `""` | Comma-separated interfaces (empty = all, excludes `lo`) |
 | `--enable-gpu` | `true` | Attempt to read GPU metrics (Raspberry Pi only) |
+| `--monitor-interval` | `5` | Default sampling interval in seconds for monitoring (1-60) |
 
 ## MCP Tools
 
@@ -143,6 +148,54 @@ Returns systemd service health information via `systemctl show`.
 **Required Arguments:**
 - `services`: Comma-separated list of service names to check
 
+### `start_monitoring`
+Starts background sampling of system metrics. Once running, the server retains a history buffer and evaluates resource thresholds to generate alerts.
+
+**Optional Arguments:**
+- `interval`: Sampling interval in seconds (defaults to `--monitor-interval`)
+
+### `stop_monitoring`
+Stops background sampling.
+
+### `get_monitoring_status`
+Returns whether monitoring is running, the aggregate health status, and the latest snapshot.
+
+### `get_metrics_history`
+Returns recent metric snapshots captured by the monitor.
+
+**Optional Arguments:**
+- `seconds`: Only return snapshots captured within the last N seconds
+
+### `get_alerts`
+Returns threshold alerts generated since the last read (read-then-drain).
+
+**Optional Arguments:**
+- `severity`: Filter by `warning` or `critical`
+
+### `get_network_throughput`
+Returns per-interface network throughput rates (bytes/sec) since the last sample.
+
+### `get_disk_throughput`
+Returns per-device disk I/O throughput rates (bytes/sec and IOPS) since the last sample.
+
+## MCP Resources
+
+The server exposes subscribable resources under the `sys://metrics/*` namespace so clients can read current state without issuing a tool call:
+
+| URI | Description |
+|-----|-------------|
+| `sys://metrics/overview` | Aggregated health dashboard |
+| `sys://metrics/cpu` | CPU model, cores, temperature |
+| `sys://metrics/memory` | RAM usage |
+| `sys://metrics/disk` | Disk usage across mount points |
+| `sys://metrics/network` | Network interface throughput |
+| `sys://metrics/processes/top` | Template: top N processes (e.g. `sys://metrics/processes/top?limit=10`) |
+
+## MCP Prompts
+
+- **`analyze_system_health`** — gathers and summarizes overall system health.
+- **`diagnose_performance_issue`** — diagnoses a reported performance problem by checking CPU, memory, disk, network, and top processes.
+
 ## Example Usage
 
 Once configured, you can ask your AI assistant:
@@ -157,6 +210,9 @@ Once configured, you can ask your AI assistant:
 - "Check if the SSH and Docker services are running"
 - "What are the disk I/O stats for my drives?"
 - "How much CPU and memory are my Docker containers using?"
+- "Start monitoring every 2 seconds and alert me if CPU is high"
+- "Show me disk throughput over the last minute"
+- "Are there any recent resource warnings?"
 
 ## Raspberry Pi Enhancements
 

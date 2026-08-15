@@ -17,15 +17,25 @@ const (
 	UnitKelvin     = "kelvin"
 )
 
+// DefaultMonitorInterval is the default sampling interval in seconds.
+const DefaultMonitorInterval = 5
+
+// MaxMonitorInterval and MinMonitorInterval bound the monitor interval.
+const (
+	MaxMonitorInterval = 60
+	MinMonitorInterval = 1
+)
+
 // Config holds the server configuration from CLI args
 type Config struct {
-	TempUnit       string
-	MaxProcesses   int
-	MountPoints    []string
-	Interfaces     []string
-	EnableGPU      bool
-	MountPointsStr string
-	InterfacesStr  string
+	TempUnit        string
+	MaxProcesses    int
+	MountPoints     []string
+	Interfaces      []string
+	EnableGPU       bool
+	MountPointsStr  string
+	InterfacesStr   string
+	MonitorInterval int
 }
 
 // Validate checks the configuration and parses string lists
@@ -52,6 +62,14 @@ func (c *Config) Validate() error {
 	// Parse interfaces
 	if c.InterfacesStr != "" {
 		c.Interfaces = SplitAndTrim(c.InterfacesStr)
+	}
+
+	// Validate monitor interval
+	if c.MonitorInterval < MinMonitorInterval {
+		c.MonitorInterval = DefaultMonitorInterval
+	}
+	if c.MonitorInterval > MaxMonitorInterval {
+		c.MonitorInterval = MaxMonitorInterval
 	}
 
 	return nil

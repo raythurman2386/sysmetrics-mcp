@@ -266,3 +266,93 @@ func TestHandleGetServiceStatusMissing(t *testing.T) {
 		t.Error("Expected error result when services parameter is missing")
 	}
 }
+
+func TestHandleStartStopMonitoring(t *testing.T) {
+	h := NewHandlerManager(&config.Config{MonitorInterval: 5})
+	req := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Arguments: map[string]interface{}{
+				"interval": 1,
+			},
+		},
+	}
+
+	// Start monitoring
+	res, err := h.HandleStartMonitoring(context.Background(), req)
+	checkToolResult(t, res, err, []string{"started", "interval_seconds"})
+
+	// Stop monitoring
+	stopReq := mcp.CallToolRequest{}
+	res, err = h.HandleStopMonitoring(context.Background(), stopReq)
+	checkToolResult(t, res, err, []string{"was_running", "is_running"})
+}
+
+func TestHandleGetMonitoringStatus(t *testing.T) {
+	h := NewHandlerManager(&config.Config{MonitorInterval: 5})
+	req := mcp.CallToolRequest{}
+	res, err := h.HandleGetMonitoringStatus(context.Background(), req)
+	checkToolResult(t, res, err, []string{"running", "status", "has_snapshot"})
+}
+
+func TestHandleGetAlerts(t *testing.T) {
+	h := NewHandlerManager(&config.Config{})
+	req := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Arguments: map[string]interface{}{},
+		},
+	}
+	res, err := h.HandleGetAlerts(context.Background(), req)
+	checkToolResult(t, res, err, []string{"count", "alerts"})
+}
+
+func TestHandleGetMetricsHistory(t *testing.T) {
+	h := NewHandlerManager(&config.Config{})
+	req := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Arguments: map[string]interface{}{},
+		},
+	}
+	res, err := h.HandleGetMetricsHistory(context.Background(), req)
+	checkToolResult(t, res, err, []string{"count", "samples", "running"})
+}
+
+func TestHandleGetNetworkThroughput(t *testing.T) {
+	h := NewHandlerManager(&config.Config{})
+	req := mcp.CallToolRequest{}
+	res, err := h.HandleGetNetworkThroughput(context.Background(), req)
+	checkToolResult(t, res, err, []string{"timestamp", "interfaces"})
+}
+
+func TestHandleGetDiskThroughput(t *testing.T) {
+	h := NewHandlerManager(&config.Config{})
+	req := mcp.CallToolRequest{}
+	res, err := h.HandleGetDiskThroughput(context.Background(), req)
+	checkToolResult(t, res, err, []string{"timestamp", "devices"})
+}
+
+func TestPrompts(t *testing.T) {
+	h := NewHandlerManager(&config.Config{})
+
+	res, err := h.promptAnalyzeHealth(context.Background(), mcp.GetPromptRequest{})
+	if err != nil {
+		t.Fatalf("promptAnalyzeHealth error: %v", err)
+	}
+	if res.Description == "" {
+		t.Error("prompt result missing description")
+	}
+	if len(res.Messages) == 0 {
+		t.Error("prompt result missing messages")
+	}
+
+	res, err = h.promptDiagnosePerformance(context.Background(), mcp.GetPromptRequest{
+		Params: mcp.GetPromptParams{
+			Arguments: map[string]string{"symptom": "slow"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("promptDiagnosePerformance error: %v", err)
+	}
+	if len(res.Messages) == 0 {
+		t.Error("prompt result missing messages")
+	}
+}
